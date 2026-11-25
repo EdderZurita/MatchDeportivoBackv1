@@ -1,5 +1,7 @@
 import json
 import os
+from django.core.cache import cache
+from rest_framework.throttling import ScopedRateThrottle
 import re
 import time
 import unicodedata
@@ -1190,7 +1192,7 @@ class ResenaActividadViewSet(viewsets.ModelViewSet):
             request=self.request
         )
 
-    @action(detail=False, methods=['get'], url_path='mi-resena/(?P<actividad_id>\d+)')
+    @action(detail=False, methods=['get'], url_path=r'mi-resena/(?P<actividad_id>\d+)')
     def mi_resena(self, request, actividad_id=None):
         """Devuelve si el usuario en sesión ya emitió una opinión sobre este partido."""
         resena = ResenaActividad.objects.filter(
@@ -1265,7 +1267,7 @@ class CalificacionViewSet(viewsets.ModelViewSet):
             request=self.request
         )
 
-    @action(detail=False, methods=['get'], url_path='pendientes/(?P<actividad_id>\d+)')
+    @action(detail=False, methods=['get'], url_path=r'pendientes/(?P<actividad_id>\d+)')
     def pendientes_por_partido(self, request, actividad_id=None):
         try:
             actividad = Actividad.objects.get(pk=actividad_id)
@@ -1739,6 +1741,8 @@ class CancelarSuscripcionView(APIView):
 # ==========================================
 class SolicitarRecuperacionView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_solicitar'
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -1797,6 +1801,11 @@ class SolicitarRecuperacionView(APIView):
 
 class RestablecerPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'otp_restablecer'
+
+    MAX_INTENTOS = 5
+    VENTANA_SEGUNDOS = 15 * 60
 
     def post(self, request):
         email = request.data.get('email', '').strip().lower()
@@ -1813,9 +1822,16 @@ class RestablecerPasswordView(APIView):
         if not usuario:
             return Response({'detail': 'Código o correo inválido.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        clave_intentos = f'otp_intentos:{usuario.pk}'
+        if cache.get(clave_intentos, 0) >= self.MAX_INTENTOS:
+            return Response({'detail': 'Demasiados intentos. Solicita un nuevo código.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
         registro_codigo = CodigoRecuperacion.objects.filter(usuario=usuario, codigo=codigo).first()
         if not registro_codigo or not registro_codigo.es_valido():
+            cache.set(clave_intentos, cache.get(clave_intentos, 0) + 1, self.VENTANA_SEGUNDOS)
             return Response({'detail': 'El código es inválido o ha expirado.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cache.delete(clave_intentos)
 
         usuario.set_password(nueva_password)
         usuario.save()

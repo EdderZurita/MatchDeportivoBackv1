@@ -1,4 +1,4 @@
-import random
+import secrets
 from datetime import timedelta
 from django.conf import settings
 from django.db import models
@@ -342,7 +342,7 @@ class CodigoRecuperacion(models.Model):
     def generar_codigo(cls, usuario):
         """Invalida códigos anteriores no usados y genera uno nuevo de 6 dígitos."""
         cls.objects.filter(usuario=usuario, usado=False).update(usado=True)
-        nuevo_codigo = str(random.randint(100000, 999999))
+        nuevo_codigo = f'{secrets.randbelow(900000) + 100000}'
         return cls.objects.create(usuario=usuario, codigo=nuevo_codigo)
 
     def es_valido(self):
