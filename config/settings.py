@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 from datetime import timedelta
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
@@ -58,6 +59,7 @@ INSTALLED_APPS = [
 
 # 2. Middlewares (CorsMiddleware debe ir lo más arriba posible)
 MIDDLEWARE = [
+    'core.middleware.RequestIdMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -207,3 +209,40 @@ FLOW_SECRET_KEY = os.environ.get('FLOW_SECRET_KEY', '')
 FLOW_API_URL = os.environ.get('FLOW_API_URL', 'https://sandbox.flow.cl/api')
 FLOW_PLAN_ID = os.environ.get('FLOW_PLAN_ID', 'premium_mensual')
 BASE_URL_BACKEND = os.environ.get('BASE_URL_BACKEND', 'https://matchdeportivo-back.onrender.com')
+
+
+# ==========================================
+# LOGGING (salida a consola; Render la captura)
+# ==========================================
+# LOG_LEVEL=DEBUG|INFO|WARNING ; LOG_FORMAT=json para una linea JSON por registro.
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+_LOG_FORMAT = os.getenv('LOG_FORMAT', 'text').lower()
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {
+        'request_id': {'()': 'core.logging_utils.RequestIdFilter'},
+    },
+    'formatters': {
+        'text': {
+            'format': '%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s',
+        },
+        'json': {'()': 'core.logging_utils.JsonFormatter'},
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'filters': ['request_id'],
+            'formatter': 'json' if _LOG_FORMAT == 'json' else 'text',
+        },
+    },
+    'loggers': {
+        'core': {'handlers': ['console'], 'level': LOG_LEVEL, 'propagate': False},
+        'django.request': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
+}
+
+# Durante los tests no se imprime logging en consola (assertLogs sigue funcionando).
+if len(sys.argv) > 1 and sys.argv[1] == 'test':
+    LOGGING['handlers']['console'] = {'class': 'logging.NullHandler'}

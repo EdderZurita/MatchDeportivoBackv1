@@ -1,8 +1,11 @@
+import logging
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging
 from django.conf import settings
 from .models import DispositivoFCM
+
+logger = logging.getLogger(__name__)
 
 # 1. Ruta hacia el archivo JSON en la raíz del proyecto
 cred_path = os.path.join(settings.BASE_DIR, 'firebase_credentials.json')
@@ -13,7 +16,7 @@ if not firebase_admin._apps:
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
     else:
-        print("AVISO: 'firebase_credentials.json' no encontrado. Notificaciones push inactivas.")
+        logger.warning("firebase_credentials.json no encontrado. Notificaciones push inactivas.")
 
 
 def enviar_notificacion_push(usuario, titulo, cuerpo, data=None):
@@ -38,7 +41,7 @@ def enviar_notificacion_push(usuario, titulo, cuerpo, data=None):
     try:
         # MÉTODO ACTUALIZADO: send_each_for_multicast
         response = messaging.send_each_for_multicast(mensaje)
-        print(f"FCM enviado con éxito: {response.success_count} mensajes entregados.")
+        logger.info("FCM enviado: %s mensajes entregados.", response.success_count)
 
         # Limpieza de tokens vencidos o apps desinstaladas
         if response.failure_count > 0:
@@ -49,4 +52,4 @@ def enviar_notificacion_push(usuario, titulo, cuerpo, data=None):
                 DispositivoFCM.objects.filter(token__in=tokens_invalidos).delete()
 
     except Exception as e:
-        print(f"Error enviando notificación FCM: {e}")
+        logger.exception("Error enviando notificación FCM")
