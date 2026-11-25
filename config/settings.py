@@ -14,14 +14,29 @@ from datetime import timedelta
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 import dj_database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-key')
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
-ALLOWED_HOSTS = ['*']
+# DEBUG es False por defecto: en local activalo con DEBUG=True en tu .env
+DEBUG = os.getenv('DEBUG', 'False').strip().lower() in ('1', 'true', 'yes')
+
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-solo-para-desarrollo-local'
+    else:
+        raise ImproperlyConfigured('Falta la variable de entorno SECRET_KEY.')
+
+# Hosts permitidos: lista separada por comas en ALLOWED_HOSTS (Render agrega su host solo)
+ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', '').split(',') if h.strip()]
+_render_host = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+if _render_host:
+    ALLOWED_HOSTS.append(_render_host)
+if DEBUG:
+    ALLOWED_HOSTS += ['localhost', '127.0.0.1', '[::1]', '10.0.2.2']
 
 # 1. Aplicaciones instaladas
 INSTALLED_APPS = [
@@ -86,6 +101,11 @@ REST_FRAMEWORK = {
     # Paginación configurada según RNF-2 del informe
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
+    # Limites de frecuencia (por IP). Usan el cache por defecto (en memoria por proceso).
+    'DEFAULT_THROTTLE_RATES': {
+        'otp_solicitar': '5/hour',
+        'otp_restablecer': '10/hour',
+    },
 }
 
 SIMPLE_JWT = {
@@ -95,7 +115,12 @@ SIMPLE_JWT = {
 }
 
 # 5. Configuración CORS para Flutter
-CORS_ALLOW_ALL_ORIGINS = True  # Para desarrollo ágil con emuladores/dispositivos
+# La app movil no usa CORS; solo importa para Flutter web / paneles web.
+# CORS_ALLOWED_ORIGINS: lista separada por comas. En DEBUG se permite todo.
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]
+# Permite Flutter web en local (puerto aleatorio) sin abrir CORS al resto del mundo
+CORS_ALLOWED_ORIGIN_REGEXES = [r'^http://(localhost|127\.0\.0\.1)(:\d+)?$']
 
 TEMPLATES = [
     {
