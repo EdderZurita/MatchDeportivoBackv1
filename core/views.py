@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from django.core.cache import cache
 from rest_framework.throttling import ScopedRateThrottle
@@ -55,6 +56,8 @@ from .serializers import (
     ValoracionJugadorSerializer,
 )
 from .utils import registrar_log
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -1378,9 +1381,14 @@ class BloqueoViewSet(viewsets.ModelViewSet):
 # ==========================================
 # 8. SUSCRIPCIONES PREMIUM (RF-22, RF-23, RF-24)
 # ==========================================
-class SuscripcionViewSet(viewsets.ModelViewSet):
+class SuscripcionViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    Consulta administrativa y gestión directa de suscripciones.
+    Consulta de suscripciones (solo lectura).
+
+    SEGURIDAD (hotfix C1): antes existian `activar` y `cancelar` manuales y el
+    viewset era escribible, lo que permitia obtener Premium gratis. La unica via
+    para activar es el retorno verificado de Flow (RetornoRegistroTarjetaView) y
+    para cancelar, CancelarSuscripcionView.
     """
     serializer_class = SuscripcionSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -1390,62 +1398,6 @@ class SuscripcionViewSet(viewsets.ModelViewSet):
         if user.is_staff:
             return Suscripcion.objects.all()
         return Suscripcion.objects.filter(usuario=user)
-
-    @action(detail=False, methods=['post'])
-    def activar(self, request):
-        token_transaccion = request.data.get('id_transaccion_psp')
-        if not token_transaccion:
-            return Response({'detail': 'Falta el identificador de transacción del PSP.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        vencimiento = timezone.now() + timedelta(days=30)
-        suscripcion, _ = Suscripcion.objects.update_or_create(
-            usuario=request.user,
-            defaults={
-                'flow_token': token_transaccion,
-                'estado': 'ACTIVA',
-                'fecha_inicio': timezone.now(),
-                'fecha_vencimiento': vencimiento,
-            }
-        )
-        request.user.es_premium = True
-        request.user.save()
-
-        registrar_log(
-            accion='SUSCRIPCION_MANUAL_ACTIVADA',
-            descripcion=f'Suscripción activada directamente para {request.user.username}.',
-            modulo='PAGOS',
-            nivel='SUCCESS',
-            usuario=request.user,
-            request=request
-        )
-
-        return Response({
-            'detail': 'Suscripción Premium activada exitosamente.',
-            'fecha_vencimiento': vencimiento,
-        }, status=status.HTTP_200_OK)
-
-    @action(detail=False, methods=['post'])
-    def cancelar(self, request):
-        suscripcion = Suscripcion.objects.filter(usuario=request.user, estado='ACTIVA').first()
-        if not suscripcion:
-            return Response({'detail': 'No posees una suscripción activa.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        suscripcion.estado = 'CANCELADA'
-        suscripcion.save()
-
-        request.user.es_premium = False
-        request.user.save()
-
-        registrar_log(
-            accion='SUSCRIPCION_CANCELADA',
-            descripcion=f'El usuario {request.user.username} canceló su suscripción.',
-            modulo='PAGOS',
-            nivel='INFO',
-            usuario=request.user,
-            request=request
-        )
-
-        return Response({'detail': 'Suscripción cancelada.'}, status=status.HTTP_200_OK)
 
 
 # ====================================================
@@ -1539,6 +1491,34 @@ class RetornoRegistroTarjetaView(APIView):
     """
     permission_classes = [permissions.AllowAny]
 
+    HTML_EXITO = """
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>MatchDeportivo Premium</title>
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f7f9fa; }
+                .card { background: white; padding: 32px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; max-width: 400px; margin: 16px; }
+                .icon { font-size: 56px; color: #2e7d32; margin-bottom: 16px; }
+                h1 { color: #1e293b; margin: 0 0 8px; font-size: 24px; }
+                p { color: #64748b; line-height: 1.5; margin-bottom: 24px; }
+                .badge { display: inline-block; background-color: #2e7d32; color: white; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 14px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <div class="icon">✓</div>
+                <span class="badge">MATCHDEPORTIVO PREMIUM</span>
+                <h1>¡Suscripción Activada!</h1>
+                <p>Tu tarjeta ha sido vinculada correctamente. Tu plan ya se encuentra activo en tu cuenta.</p>
+                <p style="font-size: 13px; color: #94a3b8;">Puedes cerrar esta ventana y regresar a la aplicación móvil.</p>
+            </div>
+        </body>
+        </html>
+        """
+
     def post(self, request):
         return self._procesar_retorno(request)
 
@@ -1554,14 +1534,14 @@ class RetornoRegistroTarjetaView(APIView):
             or (request.GET.get('token') if hasattr(request, 'GET') else None)
         )
 
-        print(f"--> [FLOW RETORNO] Metodo: {request.method} | Token: {token}")
+        logger.info("flow_retorno metodo=%s token=%s", request.method, str(token)[:12])
 
         if not token:
             return HttpResponse("<h2>Token no proporcionado por la pasarela de pagos.</h2>", status=400)
 
         # 2. Consultar estado en Flow API
         estado_registro = FlowService.consultar_registro_tarjeta(token)
-        print(f"--> [FLOW RETORNO] Respuesta Flow getRegisterStatus: {estado_registro}")
+        logger.info("flow_retorno getRegisterStatus=%s", estado_registro)
 
         status_code = estado_registro.get('status')
         customer_id = estado_registro.get('customerId')
@@ -1570,16 +1550,16 @@ class RetornoRegistroTarjetaView(APIView):
         if str(status_code) == '0':
             time.sleep(1.5)
             estado_registro = FlowService.consultar_registro_tarjeta(token)
-            print(f"--> [FLOW RETORNO] Reintento Flow: {estado_registro}")
+            logger.info("flow_retorno reintento=%s", estado_registro)
             status_code = estado_registro.get('status')
             customer_id = estado_registro.get('customerId') or customer_id
 
-        # 3. Localizar suscripción local
+        # 3. Localizar suscripción local SOLO por datos que Flow confirma.
+        # (Antes se usaba como ultimo recurso "la ultima PENDIENTE de cualquiera",
+        # lo que permitia activar la suscripcion de otro usuario.)
         suscripcion = Suscripcion.objects.filter(flow_token=token).first()
         if not suscripcion and customer_id:
             suscripcion = Suscripcion.objects.filter(flow_customer_id=customer_id).first()
-        if not suscripcion:
-            suscripcion = Suscripcion.objects.filter(estado='PENDIENTE').order_by('-id').first()
 
         if not suscripcion:
             registrar_log(
@@ -1597,15 +1577,51 @@ class RetornoRegistroTarjetaView(APIView):
         es_exitoso = (str(status_code) == '1' or status_code == 1)
 
         if es_exitoso:
+            # Idempotencia: si ya esta activa, no se vuelve a crear nada en Flow.
+            if suscripcion.estado == 'ACTIVA' and usuario.es_premium:
+                return HttpResponse(self.HTML_EXITO, content_type="text/html; charset=utf-8")
+
+            # El customerId que confirma Flow debe ser el de esta suscripcion.
+            if (suscripcion.flow_customer_id and customer_id
+                    and str(suscripcion.flow_customer_id) != str(customer_id)):
+                registrar_log(
+                    accion='RETORNO_PAGO_INCONSISTENTE',
+                    descripcion=f'customerId de Flow no coincide con la suscripción de {usuario.username}.',
+                    modulo='PAGOS',
+                    nivel='ERROR',
+                    usuario=usuario,
+                    request=request
+                )
+                return HttpResponse("<h2>No se pudo validar el pago.</h2>", status=400,
+                                    content_type="text/html; charset=utf-8")
+
             sub_id = None
             try:
                 res_sub = FlowService.crear_suscripcion(customer_id, settings.FLOW_PLAN_ID)
-                print(f"--> [FLOW RETORNO] Respuesta crear_suscripcion: {res_sub}")
+                logger.info("flow_retorno crear_suscripcion respuesta=%s", res_sub)
                 sub_id = res_sub.get('subscriptionId')
-            except Exception as e:
-                print(f"--> [FLOW RETORNO] Error al crear suscripcion en Flow: {e}")
+            except Exception:
+                logger.exception("flow_retorno error al crear suscripcion en Flow")
 
-            suscripcion.flow_subscription_id = sub_id or f"sub_{usuario.id}"
+            # Sin subscriptionId real NO se activa Premium (antes se inventaba "sub_<id>").
+            if not sub_id:
+                registrar_log(
+                    accion='SUSCRIPCION_NO_CREADA_EN_FLOW',
+                    descripcion=f'Flow no devolvió subscriptionId para {usuario.username}; Premium NO activado.',
+                    modulo='PAGOS',
+                    nivel='ERROR',
+                    usuario=usuario,
+                    request=request
+                )
+                return HttpResponse(
+                    "<h2>Tu tarjeta se registró pero no pudimos crear la suscripción. Inténtalo nuevamente desde la app.</h2>",
+                    status=502,
+                    content_type="text/html; charset=utf-8"
+                )
+
+            suscripcion.flow_subscription_id = sub_id
+            if customer_id and not suscripcion.flow_customer_id:
+                suscripcion.flow_customer_id = customer_id
             suscripcion.estado = 'ACTIVA'
             suscripcion.fecha_inicio = timezone.now()
             suscripcion.fecha_vencimiento = timezone.now() + timedelta(days=30)
@@ -1623,37 +1639,12 @@ class RetornoRegistroTarjetaView(APIView):
                 request=request
             )
 
-            html_exito = """
-            <!DOCTYPE html>
-            <html lang="es">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>MatchDeportivo Premium</title>
-                <style>
-                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f7f9fa; }
-                    .card { background: white; padding: 32px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; max-width: 400px; margin: 16px; }
-                    .icon { font-size: 56px; color: #2e7d32; margin-bottom: 16px; }
-                    h1 { color: #1e293b; margin: 0 0 8px; font-size: 24px; }
-                    p { color: #64748b; line-height: 1.5; margin-bottom: 24px; }
-                    .badge { display: inline-block; background-color: #2e7d32; color: white; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 14px; }
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <div class="icon">✓</div>
-                    <span class="badge">MATCHDEPORTIVO PREMIUM</span>
-                    <h1>¡Suscripción Activada!</h1>
-                    <p>Tu tarjeta ha sido vinculada correctamente. Tu plan ya se encuentra activo en tu cuenta.</p>
-                    <p style="font-size: 13px; color: #94a3b8;">Puedes cerrar esta ventana y regresar a la aplicación móvil.</p>
-                </div>
-            </body>
-            </html>
-            """
-            return HttpResponse(html_exito, content_type="text/html; charset=utf-8")
+            return HttpResponse(self.HTML_EXITO, content_type="text/html; charset=utf-8")
         else:
-            suscripcion.estado = 'PENDIENTE'
-            suscripcion.save()
+            # Un retorno fallido nunca debe degradar una suscripcion ya activa.
+            if suscripcion.estado != 'ACTIVA':
+                suscripcion.estado = 'PENDIENTE'
+                suscripcion.save()
 
             registrar_log(
                 accion='PAGO_CANCELADO_O_RECHAZADO',
@@ -1713,7 +1704,7 @@ class CancelarSuscripcionView(APIView):
 
         if sub.flow_subscription_id:
             res_flow = FlowService.cancelar_suscripcion(sub.flow_subscription_id)
-            print("Cancelación en Flow:", res_flow)
+            logger.info("flow cancelacion respuesta=%s", res_flow)
 
         sub.estado = 'CANCELADA'
         sub.save()
@@ -1792,7 +1783,7 @@ class SolicitarRecuperacionView(APIView):
                     request=request
                 )
             except Exception as e:
-                print(f"Error al enviar correo por Brevo API: {e}")
+                logger.exception("Error al enviar correo por Brevo API")
 
         return Response({
             'detail': 'Si el correo está registrado en el sistema, recibirás un código de 6 dígitos en tu bandeja de entrada.'
