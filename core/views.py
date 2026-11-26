@@ -1033,8 +1033,23 @@ PALABRAS_RIESGO = [
 
 
 class MensajeViewSet(viewsets.ModelViewSet):
+    """
+    Chat de actividades y mensajes privados.
+
+    SEGURIDAD (hotfix C5):
+    - Solo el organizador y los participantes CONFIRMADOS leen/escriben en el chat de una actividad.
+    - Los mensajes privados exigen amistad aceptada y ausencia de bloqueos.
+    - Los mensajes no se pueden editar (PUT/PATCH); solo su autor (o un admin) puede borrarlos.
+    """
     serializer_class = MensajeSerializer
     permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
+
+    @staticmethod
+    def _puede_participar_en_chat(user, actividad):
+        if user.is_staff or actividad.organizador_id == user.id:
+            return True
+        return Inscripcion.objects.filter(actividad=actividad, usuario=user, estado='CONFIRMADA').exists()
 
     def get_queryset(self):
         user = self.request.user
@@ -1044,18 +1059,61 @@ class MensajeViewSet(viewsets.ModelViewSet):
         amigo_id = self.request.query_params.get('amigo_id')
 
         if actividad_id:
-            return qs.filter(actividad_id=actividad_id)
+            if not str(actividad_id).isdigit():
+                return qs.none()
+            actividad = Actividad.objects.filter(pk=int(actividad_id)).first()
+            if actividad is None:
+                return qs.none()
+            if not self._puede_participar_en_chat(user, actividad):
+                raise exceptions.PermissionDenied('Solo los participantes confirmados pueden ver este chat.')
+            return qs.filter(actividad_id=actividad.id)
 
         if amigo_id:
+            if not str(amigo_id).isdigit():
+                return qs.none()
             return qs.filter(
-                (Q(usuario=user, receptor_id=amigo_id) | Q(usuario_id=amigo_id, receptor=user)),
+                (Q(usuario=user, receptor_id=int(amigo_id)) | Q(usuario_id=int(amigo_id), receptor=user)),
                 actividad__isnull=True
             )
 
         return qs.filter(Q(usuario=user) | Q(receptor=user))
 
+    def perform_destroy(self, instance):
+        if instance.usuario_id != self.request.user.id and not self.request.user.is_staff:
+            raise exceptions.PermissionDenied('Solo el autor puede eliminar este mensaje.')
+        instance.delete()
+
+    def _validar_destino(self, user, actividad, receptor):
+        """Exactamente un destino y permisos sobre ese destino."""
+        if bool(actividad) == bool(receptor):
+            raise exceptions.ValidationError(
+                {'detail': 'El mensaje debe dirigirse a una actividad o a un usuario, pero no a ambos.'}
+            )
+        if actividad:
+            if not self._puede_participar_en_chat(user, actividad):
+                raise exceptions.PermissionDenied('Solo los participantes confirmados pueden escribir en este chat.')
+            return
+        if receptor.id == user.id:
+            raise exceptions.ValidationError({'detail': 'No puedes enviarte mensajes a ti mismo.'})
+        son_amigos = Amistad.objects.filter(
+            Q(solicitante=user, receptor=receptor) | Q(solicitante=receptor, receptor=user),
+            estado='ACEPTADA'
+        ).exists()
+        if not son_amigos:
+            raise exceptions.PermissionDenied('Solo puedes enviar mensajes privados a tus amigos.')
+        hay_bloqueo = Bloqueo.objects.filter(
+            Q(bloqueador=user, bloqueado=receptor) | Q(bloqueador=receptor, bloqueado=user)
+        ).exists()
+        if hay_bloqueo:
+            raise exceptions.PermissionDenied('No puedes enviar mensajes a este usuario.')
+
     def perform_create(self, serializer):
         user = self.request.user
+        self._validar_destino(
+            user,
+            serializer.validated_data.get('actividad'),
+            serializer.validated_data.get('receptor'),
+        )
         contenido = serializer.validated_data.get('contenido', '')
         texto_lower = contenido.lower()
 
