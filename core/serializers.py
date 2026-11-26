@@ -44,6 +44,20 @@ class UsuarioSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'es_premium', 'reputacion_promedio', 'is_staff', 'is_superuser')
 
+    # Campos privados: solo los ve el propio usuario o un administrador (hotfix C6).
+    CAMPOS_PRIVADOS = ('email', 'telefono', 'is_staff', 'is_superuser')
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        solicitante = getattr(request, 'user', None)
+        es_propio = bool(solicitante and getattr(solicitante, 'pk', None) == instance.pk)
+        es_admin = bool(solicitante and getattr(solicitante, 'is_staff', False))
+        if not (es_propio or es_admin):
+            for campo in self.CAMPOS_PRIVADOS:
+                data.pop(campo, None)
+        return data
+
 
 class RegistroUsuarioSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
