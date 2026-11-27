@@ -1,7 +1,6 @@
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
-from django.db.models import Avg
-from .models import Inscripcion, Actividad, ValoracionJugador, Usuario
+from .models import Inscripcion, Actividad
 
 
 # ==========================================
@@ -32,21 +31,8 @@ def actualizar_estado_cupos_actividad(sender, instance, **kwargs):
 
 
 # ==========================================
-# 2. RECÁLCULO AUTOMÁTICO DE REPUTACIÓN (RF-18, RF-19)
+# 2. REPUTACIÓN (RF-18, RF-19)
 # ==========================================
-@receiver([post_save, post_delete], sender=ValoracionJugador)
-def actualizar_reputacion_usuario(sender, instance, **kwargs):
-    """
-    Calcula la media aritmética de todas las puntuaciones recibidas (1 a 5★)
-    y actualiza la reputación promedio del jugador evaluado en la base de datos.
-    """
-    jugador = instance.evaluado
-    promedio = ValoracionJugador.objects.filter(evaluado=jugador).aggregate(Avg('puntuacion'))['puntuacion__avg']
-
-    if promedio is not None:
-        jugador.reputacion_promedio = round(promedio, 2)
-    else:
-        # Si no tiene valoraciones (o se borraron), conserva la calificación base
-        jugador.reputacion_promedio = 5.00
-
-    jugador.save(update_fields=['reputacion_promedio'])
+# La reputación ya no se guarda: Usuario.reputacion_promedio es una propiedad que
+# calcula el promedio de las calificaciones recibidas al consultarla. Por eso se
+# eliminó la señal que intentaba asignarla (provocaba AttributeError / error 500).
