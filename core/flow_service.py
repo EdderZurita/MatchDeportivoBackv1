@@ -81,10 +81,14 @@ class FlowService:
         return cls._enviar_peticion('subscription/create', params, metodo='POST')
 
     @classmethod
-    def cancelar_suscripcion(cls, subscription_id: str) -> dict:
-        """Cancela la suscripción en Flow para detener cobros futuros (RF-24)."""
+    def cancelar_suscripcion(cls, subscription_id: str, al_final_del_periodo: bool = True) -> dict:
+        """Cancela la suscripción en Flow para detener cobros futuros (RF-24).
+
+        Por defecto la cancelación rige al final del ciclo ya pagado (at_period_end=1),
+        como en cualquier app con suscripción; con False se cancela de inmediato.
+        """
         params = {
             'subscriptionId': subscription_id,
-            'at_period_end': 0,  # 0: cancelación inmediata, 1: al final del ciclo
+            'at_period_end': 1 if al_final_del_periodo else 0,
         }
         return cls._enviar_peticion('subscription/cancel', params, metodo='POST')

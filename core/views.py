@@ -55,7 +55,7 @@ from .serializers import (
     UsuarioSerializer,
     ValoracionJugadorSerializer,
 )
-from .utils import registrar_log
+from .utils import fin_del_periodo_pagado, registrar_log
 
 logger = logging.getLogger(__name__)
 
@@ -1492,6 +1492,14 @@ class IniciarSuscripcionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if (suscripcion.estado == 'CANCELADA' and usuario.es_premium
+                and suscripcion.fecha_vencimiento and suscripcion.fecha_vencimiento > timezone.now()):
+            return Response(
+                {'detail': 'Tu Premium sigue vigente hasta el final del período pagado. '
+                           'Podrás suscribirte de nuevo cuando termine.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         customer_id = suscripcion.flow_customer_id
         if not customer_id or customer_id.startswith('usr_'):
             res_cliente = FlowService.crear_cliente(usuario)
@@ -1777,19 +1785,23 @@ class CancelarSuscripcionView(APIView):
         if sub.estado != 'ACTIVA':
             return Response({'detail': 'No tienes una suscripción activa para cancelar.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # RF-24: la cancelación rige al final del período ya pagado; hasta entonces
+        # el usuario conserva Premium y Flow deja de cobrar desde el próximo ciclo.
         if sub.flow_subscription_id:
-            res_flow = FlowService.cancelar_suscripcion(sub.flow_subscription_id)
+            res_flow = FlowService.cancelar_suscripcion(sub.flow_subscription_id, al_final_del_periodo=True)
             logger.info("flow cancelacion respuesta=%s", res_flow)
 
+        premium_hasta = fin_del_periodo_pagado(sub)
         sub.estado = 'CANCELADA'
+        sub.fecha_vencimiento = premium_hasta
         sub.save()
-
-        usuario.es_premium = False
-        usuario.save()
 
         registrar_log(
             accion='SUSCRIPCION_CANCELADA',
-            descripcion=f'Usuario {usuario.username} canceló su suscripción Premium voluntariamente.',
+            descripcion=(
+                f'Usuario {usuario.username} canceló su suscripción Premium; '
+                f'conserva Premium hasta el {timezone.localtime(premium_hasta):%d-%m-%Y}.'
+            ),
             modulo='PAGOS',
             nivel='INFO',
             usuario=usuario,
@@ -1797,8 +1809,9 @@ class CancelarSuscripcionView(APIView):
         )
 
         return Response({
-            'detail': 'Tu suscripción Premium ha sido cancelada exitosamente.',
-            'es_premium': False
+            'detail': 'Cancelaste tu suscripción. Seguirás con Premium hasta el final del período que ya pagaste.',
+            'es_premium': usuario.es_premium,
+            'premium_hasta': premium_hasta,
         }, status=status.HTTP_200_OK)
 
 
