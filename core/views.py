@@ -14,7 +14,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Avg, Q
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import exceptions, filters, generics, permissions, serializers, status, viewsets
@@ -323,7 +323,7 @@ class ActividadViewSet(viewsets.ModelViewSet):
         usuario = self.request.user
 
         if not getattr(usuario, 'es_premium', False):
-            hoy = timezone.now().date()
+            hoy = timezone.localdate()  # fecha local (Chile), igual que creado_en__date
             actividades_hoy = Actividad.objects.filter(
                 organizador=usuario,
                 creado_en__date=hoy
@@ -653,6 +653,18 @@ class ActividadViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
+                # CU-05 E1: no se puede abandonar una actividad que ya comenzó o terminó.
+                ahora = timezone.now()
+                if actividad.estado in ('FINALIZADA', 'CANCELADA') or actividad.fecha_hora <= ahora:
+                    return Response(
+                        {'detail': 'No puedes abandonar una actividad que ya comenzó o terminó.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # CU-05 A1/A2: con 2 horas o menos de anticipación queda registrada
+                # como cancelación tardía (el cupo se libera en ambos casos).
+                es_tardia = (actividad.fecha_hora - ahora) <= timedelta(hours=2)
+
                 estaba_confirmada = (inscripcion.estado == 'CONFIRMADA')
                 inscripcion.estado = 'CANCELADA'
                 inscripcion.save()
@@ -660,6 +672,19 @@ class ActividadViewSet(viewsets.ModelViewSet):
                 if estaba_confirmada and actividad.estado == 'LLENA':
                     actividad.estado = 'ABIERTA'
                     actividad.save()
+
+                if es_tardia:
+                    registrar_log(
+                        accion='CANCELACION_TARDIA',
+                        descripcion=(
+                            f'{request.user.username} abandonó "{actividad.titulo}" '
+                            f'con 2 horas o menos de anticipación (actividad #{actividad.id}).'
+                        ),
+                        modulo='ACTIVIDADES',
+                        nivel='WARNING',
+                        usuario=request.user,
+                        request=request
+                    )
 
                 registrar_log(
                     accion='PARTICIPANTE_ABANDONO',
@@ -671,7 +696,10 @@ class ActividadViewSet(viewsets.ModelViewSet):
                 )
 
                 return Response(
-                    {'detail': 'Has cancelado tu participación en este partido.'},
+                    {
+                        'detail': 'Has cancelado tu participación en este partido.',
+                        'cancelacion_tardia': es_tardia,
+                    },
                     status=status.HTTP_200_OK
                 )
         except Actividad.DoesNotExist:
@@ -1174,15 +1202,9 @@ class ValoracionJugadorViewSet(viewsets.ModelViewSet):
         return ValoracionJugador.objects.all().select_related('evaluador', 'evaluado', 'actividad')
 
     def perform_create(self, serializer):
+        # La reputación es una propiedad calculada del modelo Usuario (se obtiene al
+        # consultar las calificaciones recibidas); no se guarda ni se asigna aquí.
         valoracion = serializer.save(evaluador=self.request.user)
-
-        promedio = ValoracionJugador.objects.filter(
-            evaluado=valoracion.evaluado
-        ).aggregate(Avg('puntuacion'))['puntuacion__avg']
-
-        if promedio is not None:
-            valoracion.evaluado.reputacion_promedio = round(promedio, 2)
-            valoracion.evaluado.save()
 
         registrar_log(
             accion='VALORACION_EMITIDA',
@@ -1309,14 +1331,9 @@ class CalificacionViewSet(viewsets.ModelViewSet):
 
         calificacion = serializer.save(evaluador=evaluador)
 
-        # Recálculo de reputación promedio para el evaluado (RF-19)
-        promedio = Calificacion.objects.filter(
-            evaluado=evaluado
-        ).aggregate(Avg('puntuacion'))['puntuacion__avg']
-
-        if promedio is not None:
-            evaluado.reputacion_promedio = round(promedio, 2)
-            evaluado.save()
+        # RF-19: la reputación del evaluado es una propiedad calculada del modelo
+        # Usuario (promedio de calificaciones_recibidas); se actualiza sola al guardar
+        # la calificación, sin asignarla.
 
         # Registro de auditoría (RF-25)
         registrar_log(
