@@ -34,3 +34,52 @@ def registrar_log(accion, descripcion, modulo='SISTEMA', nivel='INFO', usuario=N
         )
     except Exception:
         audit_logger.exception('No se pudo guardar RegistroActividad accion=%s', accion)
+
+
+DIAS_CICLO_PREMIUM = 30
+
+
+def fin_del_periodo_pagado(suscripcion, ahora=None):
+    """Fecha en que termina el ciclo de 30 días ya pagado por el usuario (RF-24).
+
+    Flow renueva el cobro cada ciclo sin avisar a la app, por eso se calcula desde
+    fecha_inicio: el primer múltiplo de 30 días posterior a ``ahora``.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+    ahora = ahora or timezone.now()
+    if suscripcion.fecha_inicio:
+        ciclo = timedelta(days=DIAS_CICLO_PREMIUM)
+        transcurrido = ahora - suscripcion.fecha_inicio
+        ciclos = max(1, -(-transcurrido // ciclo))  # redondeo hacia arriba
+        fin = suscripcion.fecha_inicio + ciclo * ciclos
+        if fin > ahora:
+            return fin
+        return fin + ciclo
+    return suscripcion.fecha_vencimiento or (ahora + timedelta(days=DIAS_CICLO_PREMIUM))
+
+
+def expirar_premium_si_corresponde(usuario, ahora=None):
+    """Quita Premium si la suscripción fue cancelada y su período pagado ya terminó.
+
+    Devuelve True si el usuario perdió Premium en esta llamada.
+    """
+    from django.utils import timezone
+    ahora = ahora or timezone.now()
+    if not getattr(usuario, 'es_premium', False):
+        return False
+    sub = getattr(usuario, 'suscripcion', None)
+    if sub is None or sub.estado != 'CANCELADA':
+        return False
+    if sub.fecha_vencimiento and sub.fecha_vencimiento > ahora:
+        return False
+    usuario.es_premium = False
+    usuario.save(update_fields=['es_premium'])
+    registrar_log(
+        accion='PREMIUM_EXPIRADO',
+        descripcion=f'Premium de {usuario.username} terminó al vencer el período pagado tras cancelar.',
+        modulo='PAGOS',
+        nivel='INFO',
+        usuario=usuario,
+    )
+    return True
