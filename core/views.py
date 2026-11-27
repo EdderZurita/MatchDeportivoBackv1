@@ -17,7 +17,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse
 from django.utils import timezone
-from rest_framework import exceptions, filters, generics, permissions, serializers, status, viewsets
+from rest_framework import exceptions, filters, generics, mixins, permissions, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -831,10 +831,15 @@ class InscripcionViewSet(viewsets.ReadOnlyModelViewSet):
 # ==========================================
 # 4. RED SOCIAL Y AMISTADES (RF-6, RF-7, RF-22)
 # ==========================================
-class AmistadViewSet(viewsets.ModelViewSet):
+class AmistadViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """
     Gestión de solicitudes de contacto entre deportistas (RF-6, RF-7).
     Regla Premium: usuarios gratuitos limitados a un máximo de 5 amigos confirmados.
+
+    Las rutas genéricas son SOLO LECTURA (list/retrieve). Crear, aceptar, rechazar o
+    eliminar una amistad pasa únicamente por las acciones personalizadas, que validan
+    el tope de 5 amigos y que quien responde sea el receptor. Antes, un POST/PATCH
+    genérico permitía saltarse esas reglas (p. ej. fijar estado=ACEPTADA).
     """
     serializer_class = AmistadSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -848,23 +853,6 @@ class AmistadViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         return Amistad.objects.filter(Q(solicitante=user) | Q(receptor=user))
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        if not getattr(user, 'es_premium', False) and self._total_amigos(user) >= 5:
-            registrar_log(
-                accion='LIMITE_AMIGOS_BLOQUEADO',
-                descripcion=f'{user.username} intentó agregar una amistad superando el tope de 5.',
-                modulo='AMISTADES',
-                nivel='WARNING',
-                usuario=user,
-                request=self.request
-            )
-            raise exceptions.PermissionDenied(
-                'Has alcanzado el límite de 5 amigos para el Plan Gratuito. '
-                'Pásate a MatchDeportivo Premium para conectar con amigos ilimitados.'
-            )
-        serializer.save(solicitante=user)
 
     @action(detail=False, methods=['get'], url_path='mis-amigos')
     def mis_amigos(self, request):
