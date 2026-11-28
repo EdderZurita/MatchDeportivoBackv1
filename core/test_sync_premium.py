@@ -204,7 +204,7 @@ class InterruptorApagadoTests(TestCase):
 
     def test_por_defecto_esta_apagado(self):
         from django.conf import settings
-        self.assertFalse(getattr(settings, 'PREMIUM_SYNC_ENABLED'))
+        self.assertFalse(settings.PREMIUM_SYNC_ENABLED)
 
 
 @override_settings(PREMIUM_SYNC_ENABLED=False, PREMIUM_GRACIA_DIAS=1)
@@ -240,3 +240,20 @@ class FlowServiceTimeoutTests(TestCase):
             post.return_value.json.return_value = {}
             FlowService.cancelar_suscripcion('sub_1')
         self.assertIn('timeout', post.call_args.kwargs)
+
+
+class ComandoDiagnosticoTests(TestCase):
+    @patch(FLOW)
+    def test_diagnostico_muestra_los_campos_de_flow_y_no_modifica_nada(self, flow):
+        flow.return_value = flow_ok(morose=1, customerId='cus_secreto', email='x@y.cl')
+        u, sub = premium_vencido('quique')
+        salida = StringIO()
+        call_command('sincronizar_premium', '--diagnostico', stdout=salida)
+        texto = salida.getvalue()
+        self.assertIn('morose=1', texto)
+        self.assertIn('period_end=', texto)
+        self.assertNotIn('cus_secreto', texto)   # datos del cliente no se imprimen
+        self.assertNotIn('x@y.cl', texto)
+        u.refresh_from_db(); sub.refresh_from_db()
+        self.assertTrue(u.es_premium)
+        self.assertEqual(sub.estado, 'ACTIVA')
