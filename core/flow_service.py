@@ -1,7 +1,12 @@
 import hmac
 import hashlib
+import logging
 import requests
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
+
+TIMEOUT_SEGUNDOS = 15
 
 
 class FlowService:
@@ -29,10 +34,15 @@ class FlowService:
         params['s'] = cls._firmar(params)
         url = f"{settings.FLOW_API_URL.rstrip('/')}/{endpoint.lstrip('/')}"
 
-        if metodo.upper() == "POST":
-            response = requests.post(url, data=params)
-        else:
-            response = requests.get(url, params=params)
+        try:
+            if metodo.upper() == "POST":
+                response = requests.post(url, data=params, timeout=TIMEOUT_SEGUNDOS)
+            else:
+                response = requests.get(url, params=params, timeout=TIMEOUT_SEGUNDOS)
+        except requests.RequestException as exc:
+            # Sin timeout, un Flow lento dejaba colgado un worker de gunicorn.
+            logger.warning("flow %s sin respuesta: %s", endpoint, exc.__class__.__name__)
+            return {"code": -1, "message": "Flow no respondió a tiempo.", "error_conexion": True}
 
         try:
             return response.json()
@@ -92,3 +102,9 @@ class FlowService:
             'at_period_end': 1 if al_final_del_periodo else 0,
         }
         return cls._enviar_peticion('subscription/cancel', params, metodo='POST')
+
+    @classmethod
+    def obtener_suscripcion(cls, subscription_id: str) -> dict:
+        """Consulta el estado real de la suscripción en Flow (status, morose, period_end...)."""
+        params = {'subscriptionId': subscription_id}
+        return cls._enviar_peticion('subscription/get', params, metodo='GET')
