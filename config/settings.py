@@ -208,6 +208,12 @@ FLOW_API_KEY = os.environ.get('FLOW_API_KEY', '')
 FLOW_SECRET_KEY = os.environ.get('FLOW_SECRET_KEY', '')
 FLOW_API_URL = os.environ.get('FLOW_API_URL', 'https://sandbox.flow.cl/api')
 FLOW_PLAN_ID = os.environ.get('FLOW_PLAN_ID', 'premium_mensual')
+
+# Sincronización de Premium con Flow (C3). Apagada por defecto: se enciende en un entorno
+# solo después de probarla contra el sandbox de Flow.
+PREMIUM_SYNC_ENABLED = os.environ.get('PREMIUM_SYNC_ENABLED', 'False').lower() == 'true'
+PREMIUM_SYNC_INTERVALO_SEG = int(os.environ.get('PREMIUM_SYNC_INTERVALO_SEG', '600'))
+PREMIUM_GRACIA_DIAS = int(os.environ.get('PREMIUM_GRACIA_DIAS', '1'))
 BASE_URL_BACKEND = os.environ.get('BASE_URL_BACKEND', 'https://matchdeportivo-back.onrender.com')
 
 
