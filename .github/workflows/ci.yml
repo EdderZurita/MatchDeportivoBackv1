@@ -35,7 +35,7 @@ jobs:
           cache: pip
       - name: Instalar dependencias
         run: |
-          pip install --only-binary :all: -r requirements.txt coverage==7.14.0
+          pip install --require-hashes --only-binary :all: -r requirements-ci.txt
       - name: Verificar proyecto y migraciones
         run: |
           python manage.py check
@@ -68,7 +68,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - name: Instalar herramientas
-        run: 'pip install --only-binary :all: ruff==0.17.6 bandit==1.9.4 pip-audit'
+        run: |
+          pip install --require-hashes --only-binary :all: -r requirements-lint.txt
       - name: Ruff (errores reales, no estilo)
         run: ruff check core config --select F,B,E9,S,DJ,PLE --exclude "core/migrations" --exclude "core/test_*.py" --exclude core/tests.py --output-format github
       - name: Bandit (seguridad del código)
