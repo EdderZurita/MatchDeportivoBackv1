@@ -27,7 +27,7 @@ Primera prueba: pestaña **Actions → Respaldo Supabase → Run workflow**.
 
 ```bash
 # 1. Descargar el artefacto desde la pestaña Actions y descifrar
-gpg --output respaldo.dump --decrypt respaldo-staging-YYYYMMDD-HHMMSS.dump.gpg
+gpg --output respaldo.dump --decrypt respaldo-STAGING-<id-de-ejecucion>-1.dump.gpg
 
 # 2. Restaurar en una base NUEVA (recomendado) o sobre la existente
 pg_restore --no-owner --no-privileges --clean --if-exists \
@@ -39,6 +39,7 @@ prueba en una base nueva y revisa los datos.
 
 ## Límites conocidos
 
+- El nombre del archivo lleva el id de la ejecución; la fecha se ve en la pestaña Actions.
 - Retención de 30 días en GitHub; para más tiempo, copiar los artefactos a almacenamiento externo.
 - GitHub desactiva los workflows programados tras 60 días sin actividad en el repositorio.
 - Si un respaldo falla, GitHub avisa por correo a quien editó el workflow por última vez.

@@ -26,7 +26,8 @@ jobs:
         entorno: [STAGING, PROD]
     env:
       ENTORNO: ${{ matrix.entorno }}
-      DB_URL: ${{ secrets[format('SUPABASE_DB_URL_{0}', matrix.entorno)] }}
+      ARCHIVO: respaldo-${{ matrix.entorno }}-${{ github.run_id }}-${{ github.run_attempt }}.dump.gpg
+      DB_URL: ${{ matrix.entorno == 'PROD' && secrets.SUPABASE_DB_URL_PROD || secrets.SUPABASE_DB_URL_STAGING }}
       PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
       PGSSLMODE: require
     services:
@@ -34,7 +35,9 @@ jobs:
       verificacion:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: verificacion
+          # Base efímera que solo vive durante este job y solo escucha en localhost:
+          # sin contraseña (trust), así no hay ninguna credencial escrita en el archivo.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -72,8 +75,6 @@ jobs:
         run: |
           set -euo pipefail
           PG=/usr/lib/postgresql/17/bin
-          FECHA=$(date -u +%Y%m%d-%H%M%S)
-          echo "ARCHIVO=respaldo-${ENTORNO,,}-${FECHA}.dump.gpg" >> "$GITHUB_ENV"
           # Solo el esquema public (las tablas de Django). Formato custom: comprimido y restaurable por tabla.
           $PG/pg_dump "$DB_URL" --format=custom --no-owner --no-privileges --schema=public --file=respaldo.dump
           TAMANO=$(stat -c%s respaldo.dump)
@@ -101,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           PG=/usr/lib/postgresql/17/bin
-          DESTINO="postgresql://postgres:verificacion@localhost:5432/postgres"
+          DESTINO="postgresql://postgres@localhost:5432/postgres"
           gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
               --decrypt --output verificacion.dump "$ARCHIVO" 3<<<"$PASSPHRASE"
           # Los avisos de roles/extensiones propios de Supabase no impiden restaurar los datos.
@@ -118,7 +119,7 @@ jobs:
 
       - name: Guardar respaldo cifrado
         if: steps.cfg.outputs.activo == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ env.ARCHIVO }}
           path: |
